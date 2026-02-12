@@ -15,7 +15,7 @@ ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
 SOURCE_CHANNEL_ID = int(os.getenv('SOURCE_CHANNEL_ID', '-1002682552255'))
 
 # Source 2 : Canal des statistiques
-SOURCE_CHANNEL_2_ID = int(os.getenv('SOURCE_CHANNEL_2_ID', '-1003309666471'))
+SOURCE_CHANNEL_2_ID = int(os.getenv('SOURCE_CHANNEL_2_ID', '-1003216148681'))
 
 # Canal où envoyer les prédictions
 # IMPORTANT: Le bot doit être administrateur de ce canal avec permission "Publier des messages"
