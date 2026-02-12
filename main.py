@@ -171,16 +171,33 @@ async def send_prediction_to_channel(target_game: int, predicted_suit: str, base
 🎰 Poursuite deux jeux(🔰+3)
 🗯️ Résultats :⏳"""
         msg_id = 0
+        message_sent = False
 
-        if PREDICTION_CHANNEL_ID and PREDICTION_CHANNEL_ID != 0 and prediction_channel_ok:
+        if PREDICTION_CHANNEL_ID and PREDICTION_CHANNEL_ID != 0:
             try:
+                # Tenter d'envoyer le message même si prediction_channel_ok est False
+                # car la vérification au démarrage peut avoir échoué temporairement
                 pred_msg = await client.send_message(PREDICTION_CHANNEL_ID, prediction_msg)
                 msg_id = pred_msg.id
-                logger.info(f"✅ Prédiction envoyée au canal de prédiction {PREDICTION_CHANNEL_ID}")
+                message_sent = True
+                logger.info(f"✅ Prédiction envoyée au canal {PREDICTION_CHANNEL_ID} (msg_id: {msg_id}, jeu #{target_game}, {predicted_suit})")
             except Exception as e:
-                logger.error(f"❌ Erreur envoi prédiction au canal: {e}")
+                logger.error(f"❌ ÉCHEC ENVOI PRÉDICTION AU CANAL {PREDICTION_CHANNEL_ID}: {e}")
+                logger.error(f"   → Type d'erreur: {type(e).__name__}")
+                
+                # Messages d'erreur spécifiques selon le type d'erreur
+                error_str = str(e).lower()
+                if 'chat' in error_str and 'not found' in error_str:
+                    logger.error(f"   → CAUSE: Canal introuvable. Vérifiez l'ID: {PREDICTION_CHANNEL_ID}")
+                elif 'rights' in error_str or 'permission' in error_str or 'forbidden' in error_str:
+                    logger.error(f"   → CAUSE: Droits insuffisants. Le bot doit être ADMIN du canal.")
+                elif 'private' in error_str:
+                    logger.error(f"   → CAUSE: Canal privé inaccessible. Ajoutez le bot au canal.")
+                
+                # On continue quand même pour garder la prédiction en mémoire (mode offline)
+                logger.warning(f"   → La prédiction est conservée en mémoire mais n'a pas été envoyée au canal.")
         else:
-            logger.warning(f"⚠️ Canal de prédiction non accessible, prédiction non envoyée")
+            logger.warning(f"⚠️ PREDICTION_CHANNEL_ID non configuré ({PREDICTION_CHANNEL_ID}), prédiction non envoyée")
 
         pending_predictions[target_game] = {
             'message_id': msg_id,
@@ -192,11 +209,17 @@ async def send_prediction_to_channel(target_game: int, predicted_suit: str, base
             'created_at': datetime.now().isoformat()
         }
 
-        logger.info(f"Prédiction active: Jeu #{target_game} - {predicted_suit}")
+        if message_sent:
+            logger.info(f"Prédiction active enregistrée: Jeu #{target_game} - {predicted_suit}")
+        else:
+            logger.warning(f"Prédiction enregistrée (mode offline): Jeu #{target_game} - {predicted_suit}")
+            
         return msg_id
 
     except Exception as e:
-        logger.error(f"Erreur envoi prédiction: {e}")
+        logger.error(f"Erreur critique dans send_prediction_to_channel: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 def queue_prediction(target_game: int, predicted_suit: str, base_game: int, rattrapage=0, original_game=None):
@@ -251,11 +274,12 @@ async def update_prediction_status(game_number: int, new_status: str):
 🎰 Poursuite deux jeux(🔰+3)
 🗯️ Résultats :{new_status}"""
 
-        if PREDICTION_CHANNEL_ID and PREDICTION_CHANNEL_ID != 0 and message_id > 0 and prediction_channel_ok:
+        if PREDICTION_CHANNEL_ID and PREDICTION_CHANNEL_ID != 0 and message_id > 0:
             try:
                 await client.edit_message(PREDICTION_CHANNEL_ID, message_id, updated_msg)
             except Exception as e:
-                logger.error(f"❌ Erreur mise à jour: {e}")
+                logger.error(f"❌ Erreur mise à jour statut prédiction #{game_number}: {e}")
+                # Ne pas bloquer si la mise à jour échoue, la prédiction reste en mémoire
 
         # --- NOUVELLE LOGIQUE DE GESTION DES RÉSULTATS ---
 
@@ -650,7 +674,8 @@ async def cmd_status(event):
 
     status_msg = f"📊 **État du Bot:**\n\n"
     status_msg += f"🎮 Jeu actuel (Source 1): #{current_game_number}\n"
-    status_msg += f"🔢 Paramètre 'a': {USER_A}\n\n"
+    status_msg += f"🔢 Paramètre 'a': {USER_A}\n"
+    status_msg += f"📢 Canal prédiction accessible: {'✅ Oui' if prediction_channel_ok else '❌ Non'}\n\n"
 
     # Afficher les compteurs de prédictions consécutives
     if suit_consecutive_counts:
@@ -705,11 +730,44 @@ async def cmd_help(event):
 - `/debug` : Infos techniques.
 """)
 
+@client.on(events.NewMessage(pattern='/checkchannels'))
+async def cmd_check_channels(event):
+    """Commande pour vérifier l'accès aux canaux"""
+    if event.is_group or event.is_channel: return
+    if event.sender_id != ADMIN_ID and ADMIN_ID != 0:
+        await event.respond("Commande réservée à l'administrateur")
+        return
+
+    check_msg = "🔍 **Vérification des canaux:**\n\n"
+    
+    # Vérifier canal de prédiction
+    if PREDICTION_CHANNEL_ID:
+        try:
+            entity = await client.get_entity(PREDICTION_CHANNEL_ID)
+            check_msg += f"📢 **Canal de prédiction:**\n"
+            check_msg += f"  • ID: {PREDICTION_CHANNEL_ID}\n"
+            check_msg += f"  • Titre: {entity.title if hasattr(entity, 'title') else 'N/A'}\n"
+            
+            # Tenter d'envoyer un message test
+            try:
+                test_msg = await client.send_message(PREDICTION_CHANNEL_ID, "🧪 Test de vérification des canaux")
+                await test_msg.delete()
+                check_msg += f"  • Envoi: ✅ OK (message test envoyé et supprimé)\n"
+            except Exception as e:
+                check_msg += f"  • Envoi: ❌ ERREUR - {e}\n"
+                check_msg += f"  • 💡 Ajoutez le bot comme **administrateur** du canal avec permission 'Publier des messages'\n"
+        except Exception as e:
+            check_msg += f"📢 **Canal de prédiction:** ❌ inaccessible\n"
+            check_msg += f"  • Erreur: {e}\n"
+    else:
+        check_msg += f"📢 **Canal de prédiction:** ⚠️ Non configuré\n"
+    
+    await event.respond(check_msg)
 
 # --- Serveur Web et Démarrage ---
 
 async def index(request):
-    html = f"""<!DOCTYPE html><html><head><title>Bot Prédiction Baccarat</title></head><body><h1>🎯 Bot de Prédiction Baccarat</h1><p>Le bot est en ligne et surveille les canaux.</p><p><strong>Jeu actuel:</strong> #{current_game_number}</p></body></html>"""
+    html = f"""<!DOCTYPE html><html><head><title>Bot Prédiction Baccarat</title></head><body><h1>🎯 Bot de Prédiction Baccarat</h1><p>Le bot est en ligne et surveille les canaux.</p><p><strong>Jeu actuel:</strong> #{current_game_number}</p><p><strong>Canal prédiction:</strong> {'✅ OK' if prediction_channel_ok else '❌ Problème'}</p></body></html>"""
     return web.Response(text=html, content_type='text/html', status=200)
 
 async def health_check(request):
@@ -769,10 +827,37 @@ async def start_bot():
     global source_channel_ok, prediction_channel_ok
     try:
         await client.start(bot_token=BOT_TOKEN)
+        
+        # Vérifier l'accès au canal de prédiction
+        if PREDICTION_CHANNEL_ID and PREDICTION_CHANNEL_ID != 0:
+            try:
+                # Tenter de récupérer les infos du canal pour vérifier l'accès
+                entity = await client.get_entity(PREDICTION_CHANNEL_ID)
+                prediction_channel_ok = True
+                logger.info(f"✅ Canal de prédition trouvé: {entity.title if hasattr(entity, 'title') else 'Sans titre'} (ID: {PREDICTION_CHANNEL_ID})")
+                
+                # Tenter d'envoyer un message de test pour vérifier les permissions d'écriture
+                try:
+                    test_msg = await client.send_message(PREDICTION_CHANNEL_ID, "🤖 Bot de prédiction démarré et prêt.")
+                    await test_msg.delete()  # Supprimer le message de test
+                    logger.info(f"✅ Permissions d'écriture vérifiées sur le canal de prédiction")
+                except Exception as send_error:
+                    prediction_channel_ok = False
+                    logger.error(f"❌ Le bot ne peut pas écrire dans le canal de prédiction: {send_error}")
+                    logger.error("   → Le bot doit être ADMINISTRATEUR du canal avec permission 'Publier des messages'")
+                    
+            except Exception as e:
+                prediction_channel_ok = False
+                logger.error(f"❌ Impossible d'accéder au canal de prédiction {PREDICTION_CHANNEL_ID}: {e}")
+                logger.error("Vérifiez que:")
+                logger.error("  1. Le bot est membre du canal (ajoutez-le en tant qu'administrateur)")
+                logger.error("  2. L'ID du canal est correct (format: -100xxxxxxxxxx)")
+                logger.error("  3. Pour obtenir l'ID: transférez un message du canal vers @userinfobot")
+        else:
+            prediction_channel_ok = False
+            logger.warning("⚠️ PREDICTION_CHANNEL_ID non configuré")
 
         source_channel_ok = True
-        prediction_channel_ok = True 
-        logger.info("Bot connecté et canaux marqués comme accessibles.")
         return True
     except Exception as e:
         logger.error(f"Erreur démarrage du client Telegram: {e}")
