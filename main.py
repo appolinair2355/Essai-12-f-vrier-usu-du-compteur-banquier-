@@ -36,10 +36,6 @@ if not BOT_TOKEN:
 
 logger.info(f"Configuration: SOURCE_CHANNEL={SOURCE_CHANNEL_ID}, SOURCE_CHANNEL_2={SOURCE_CHANNEL_2_ID}, PREDICTION_CHANNEL={PREDICTION_CHANNEL_ID}")
 
-# Initialisation du client Telegram avec session string ou nouvelle session
-session_string = os.getenv('TELEGRAM_SESSION', '')
-client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
-
 # --- Variables Globales d'État ---
 # Prédictions actives (déjà envoyées au canal de prédiction)
 pending_predictions = {}
@@ -65,6 +61,9 @@ USER_A = 1                   # Valeur 'a' choisie par l'utilisateur (entier natu
 source_channel_ok = False
 prediction_channel_ok = False
 transfer_enabled = True # Initialisé à True
+
+# Client Telegram - sera initialisé dans main()
+client = None
 
 # --- NOUVELLE FONCTION: Contrôle horaire des prédictions ---
 
@@ -169,7 +168,7 @@ async def send_prediction_to_channel(target_game: int, predicted_suit: str, base
         prediction_msg = f"""🎮 banquier №{target_game}
 ⚜️ Couleur de la carte:{predicted_suit}
 🎰 Poursuite deux jeux(🔰+3)
-🗯️ Résultats :⏳"""
+🗯️ Résultats :⏳⏳"""
         msg_id = 0
         message_sent = False
 
@@ -268,11 +267,19 @@ async def update_prediction_status(game_number: int, new_status: str):
         message_id = pred['message_id']
         suit = pred['suit']
 
+        # Déterminer le texte du résultat selon le statut
+        if '✅' in new_status:
+            result_text = f"{new_status} GAGNÉ"
+        elif '❌' in new_status:
+            result_text = f"{new_status} PERDU"
+        else:
+            result_text = new_status
+
         # NOUVEAU FORMAT DE MISE À JOUR DU MESSAGE
         updated_msg = f"""🎮 banquier №{game_number}
 ⚜️ Couleur de la carte:{suit}
 🎰 Poursuite deux jeux(🔰+3)
-🗯️ Résultats :{new_status}"""
+🗯️ Résultats :{result_text}"""
 
         if PREDICTION_CHANNEL_ID and PREDICTION_CHANNEL_ID != 0 and message_id > 0:
             try:
@@ -341,7 +348,7 @@ async def check_prediction_result(game_number: int, second_group: str):
         pred = pending_predictions[game_number]
         if pred.get('rattrapage', 0) == 0:
             target_suit = pred['suit']
-            # MODIFIÉ : Utilisation du deuxième groupe au lieu du premier
+            # Utilisation du deuxième groupe
             if has_suit_in_group(second_group, target_suit):
                 await update_prediction_status(game_number, '✅0️⃣')
                 return
@@ -359,7 +366,7 @@ async def check_prediction_result(game_number: int, second_group: str):
             target_suit = pred['suit']
             rattrapage_actuel = pred['rattrapage']
 
-            # MODIFIÉ : Utilisation du deuxième groupe au lieu du premier
+            # Utilisation du deuxième groupe
             if has_suit_in_group(second_group, target_suit):
                 # Trouvé ! On met à jour le statut avec le bon numéro de rattrapage
                 await update_prediction_status(original_game, f'✅{rattrapage_actuel}️⃣')
@@ -564,10 +571,10 @@ async def process_finalized_message(message_text: str, chat_id: int):
         processed_messages.add(message_hash)
 
         groups = extract_parentheses_groups(message_text)
-        # MODIFIÉ : Vérification qu'il y a au moins 2 groupes et utilisation du deuxième
-        if len(groups) < 2: 
+        # Vérification qu'il y a au moins 2 groupes et utilisation du deuxième
+        if len(groups) < 1: 
             return
-        second_group = groups[1]  # MODIFIÉ : Index 1 au lieu de 0
+        second_group = groups[1]  # MODIFIÉ : Index 1 (deuxième groupe)
 
         # Vérification des résultats
         await check_prediction_result(game_number, second_group)
@@ -627,19 +634,12 @@ async def handle_edited_message(event):
     except Exception as e:
         logger.error(f"Erreur handle_edited_message: {e}")
 
-# --- Gestion des Messages (Hooks Telethon) ---
+# --- Commandes Administrateur (fonctions) ---
 
-client.add_event_handler(handle_message, events.NewMessage())
-client.add_event_handler(handle_edited_message, events.MessageEdited())
-
-# --- Commandes Administrateur ---
-
-@client.on(events.NewMessage(pattern='/start'))
 async def cmd_start(event):
     if event.is_group or event.is_channel: return
     await event.respond("🤖 **Bot de Prédiction Baccarat**\n\nCommandes: `/status`, `/help`, `/debug`, `/checkchannels`")
 
-@client.on(events.NewMessage(pattern=r'^/a (\d+)$'))
 async def cmd_set_a_shortcut(event):
     if event.is_group or event.is_channel: return
     if event.sender_id != ADMIN_ID and ADMIN_ID != 0: return
@@ -652,7 +652,6 @@ async def cmd_set_a_shortcut(event):
     except Exception as e:
         await event.respond(f"❌ Erreur: {e}")
 
-@client.on(events.NewMessage(pattern=r'^/set_a (\d+)$'))
 async def cmd_set_a(event):
     if event.is_group or event.is_channel: return
     if event.sender_id != ADMIN_ID and ADMIN_ID != 0: return
@@ -665,7 +664,6 @@ async def cmd_set_a(event):
     except Exception as e:
         await event.respond(f"❌ Erreur: {e}")
 
-@client.on(events.NewMessage(pattern='/status'))
 async def cmd_status(event):
     if event.is_group or event.is_channel: return
     if event.sender_id != ADMIN_ID and ADMIN_ID != 0:
@@ -707,7 +705,6 @@ async def cmd_status(event):
 
     await event.respond(status_msg)
 
-@client.on(events.NewMessage(pattern='/help'))
 async def cmd_help(event):
     if event.is_group or event.is_channel: return
     await event.respond(f"""📖 **Aide - Bot de Prédiction V3**
@@ -730,7 +727,6 @@ async def cmd_help(event):
 - `/debug` : Infos techniques.
 """)
 
-@client.on(events.NewMessage(pattern='/checkchannels'))
 async def cmd_check_channels(event):
     """Commande pour vérifier l'accès aux canaux"""
     if event.is_group or event.is_channel: return
@@ -763,6 +759,20 @@ async def cmd_check_channels(event):
         check_msg += f"📢 **Canal de prédiction:** ⚠️ Non configuré\n"
     
     await event.respond(check_msg)
+
+def setup_command_handlers():
+    """Configure tous les gestionnaires de commandes."""
+    client.add_event_handler(cmd_start, events.NewMessage(pattern='/start'))
+    client.add_event_handler(cmd_set_a_shortcut, events.NewMessage(pattern=r'^/a (\d+)$'))
+    client.add_event_handler(cmd_set_a, events.NewMessage(pattern=r'^/set_a (\d+)$'))
+    client.add_event_handler(cmd_status, events.NewMessage(pattern='/status'))
+    client.add_event_handler(cmd_help, events.NewMessage(pattern='/help'))
+    client.add_event_handler(cmd_check_channels, events.NewMessage(pattern='/checkchannels'))
+
+def setup_message_handlers():
+    """Configure les gestionnaires de messages des canaux."""
+    client.add_event_handler(handle_message, events.NewMessage())
+    client.add_event_handler(handle_edited_message, events.MessageEdited())
 
 # --- Serveur Web et Démarrage ---
 
@@ -824,9 +834,18 @@ async def schedule_daily_reset():
 
 async def start_bot():
     """Démarre le client Telegram et les vérifications initiales."""
-    global source_channel_ok, prediction_channel_ok
+    global source_channel_ok, prediction_channel_ok, client
+    
+    # Initialiser le client ici, dans la boucle d'événements
+    session_string = os.getenv('TELEGRAM_SESSION', '')
+    client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
+    
     try:
         await client.start(bot_token=BOT_TOKEN)
+        
+        # Configurer les gestionnaires d'événements APRÈS l'initialisation du client
+        setup_message_handlers()
+        setup_command_handlers()
         
         # Vérifier l'accès au canal de prédiction
         if PREDICTION_CHANNEL_ID and PREDICTION_CHANNEL_ID != 0:
@@ -866,12 +885,14 @@ async def start_bot():
 async def main():
     """Fonction principale pour lancer le serveur web, le bot et la tâche de reset."""
     try:
-        await start_web_server()
-
+        # Démarrer le bot Telegram en premier
         success = await start_bot()
         if not success:
             logger.error("Échec du démarrage du bot")
             return
+
+        # Démarrer le serveur web APRÈS le bot
+        await start_web_server()
 
         # Lancement de la tâche de reset en arrière-plan
         asyncio.create_task(schedule_daily_reset())
@@ -884,7 +905,7 @@ async def main():
         import traceback
         logger.error(traceback.format_exc())
     finally:
-        if client.is_connected():
+        if client and client.is_connected():
             await client.disconnect()
 
 if __name__ == '__main__':
